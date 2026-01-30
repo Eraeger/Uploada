@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upload zu n8n</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        background: #0b0f19;
+        color: #e8eefc;
+      }
+      .wrap { max-width: 760px; margin: 40px auto; padding: 0 16px; }
+      .card {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      p { margin: 0 0 16px; color: rgba(232,238,252,0.75); line-height: 1.5; }
+      .drop {
+        border: 2px dashed rgba(232,238,252,0.25);
+        border-radius: 14px;
+        padding: 18px;
+        background: rgba(0,0,0,0.15);
+        cursor: pointer;
+        transition: 160ms ease;
+      }
+      .drop.dragover { border-color: rgba(232,238,252,0.55); background: rgba(255,255,255,0.08); }
+      .row { display: grid; gap: 12px; margin-top: 14px; }
+      textarea, input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(0,0,0,0.25);
+        color: #e8eefc;
+        padding: 12px;
+        outline: none;
+      }
+      textarea { min-height: 110px; resize: vertical; }
+      .actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+      button {
+        border: 0;
+        border-radius: 12px;
+        padding: 12px 14px;
+        background: #4c7dff;
+        color: #081022;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      .muted { color: rgba(232,238,252,0.70); font-size: 13px; }
+      .status { margin-top: 12px; font-size: 14px; }
+      .ok { color: #7dffb0; }
+      .err { color: #ff7d7d; }
+      .files { margin-top: 10px; color: rgba(232,238,252,0.82); font-size: 13px; }
+      .progress {
+        margin-top: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.10);
+        overflow: hidden;
+        display: none;
+      }
+      .bar {
+        height: 100%;
+        width: 0%;
+        background: rgba(232,238,252,0.75);
+        transition: width 200ms ease;
+      }
+      footer { margin-top: 14px; color: rgba(232,238,252,0.55); font-size: 12px; }
+      code { color: rgba(232,238,252,0.85); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Datei Upload zu n8n</h1>
+        <p>
+          Ziehe Dateien hier hinein oder klicke zum Auswählen. Optional kannst du Zusatzinfos mitsenden.
+        </p>
+
+        <div id="drop" class="drop" role="button" tabindex="0" aria-label="Datei Upload Drop Zone">
+          <strong>Dateien ablegen oder klicken</strong>
+          <div class="muted" style="margin-top: 6px;">
+            Mehrere Dateien möglich. Es wird als multipart form data gesendet.
+          </div>
+          <input id="fileInput" type="file" multiple style="display:none" />
+          <div id="fileList" class="files"></div>
+        </div>
+
+        <div class="row">
+          <input id="sender" type="text" placeholder="Optional: Absender oder Kontext (zum Beispiel Projektname)" />
+          <textarea id="notes" placeholder="Optional: Notiz oder Anweisung, die n8n verarbeiten soll"></textarea>
+        </div>
+
+        <div class="actions">
+          <button id="sendBtn" disabled>Upload senden</button>
+          <button id="resetBtn" type="button">Zurücksetzen</button>
+          <span class="muted">Ziel: <code id="targetUrl"></code></span>
+        </div>
+
+        <div class="progress" id="progress">
+          <div class="bar" id="bar"></div>
+        </div>
+
+        <div id="status" class="status"></div>
+
+        <footer>
+          Hinweis: Damit der Browser den Upload erlaubt, muss dein n8n Webhook CORS erlauben oder du nutzt einen Proxy in Netlify.
+        </footer>
+      </div>
+    </div>
+
+    <script>
+      const WEBHOOK_URL = "https://erraeger.app.n8n.cloud/webhook-test/image-upload";
+
+      const drop = document.getElementById("drop");
+      const fileInput = document.getElementById("fileInput");
+      const fileList = document.getElementById("fileList");
+      const sendBtn = document.getElementById("sendBtn");
+      const resetBtn = document.getElementById("resetBtn");
+      const statusEl = document.getElementById("status");
+      const senderEl = document.getElementById("sender");
+      const notesEl = document.getElementById("notes");
+      const targetUrlEl = document.getElementById("targetUrl");
+      const progressEl = document.getElementById("progress");
+      const barEl = document.getElementById("bar");
+
+      targetUrlEl.textContent = WEBHOOK_URL;
+
+      let selectedFiles = [];
+
+      function renderFiles() {
+        if (!selectedFiles.length) {
+          fileList.textContent = "Noch keine Dateien ausgewählt.";
+          sendBtn.disabled = true;
+          return;
+        }
+        fileList.innerHTML = selectedFiles
+          .map(f => `${escapeHtml(f.name)} <span class="muted">(${formatBytes(f.size)})</span>`)
+          .join("<br>");
+        sendBtn.disabled = false;
+      }
+
+      function escapeHtml(str) {
+        return str.replace(/[&<>"']/g, s => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          "\"": "&quot;",
+          "'": "&#039;"
+        })[s]);
+      }
+
+      function formatBytes(bytes) {
+        const units = ["B", "KB", "MB", "GB"];
+        let i = 0;
+        let n = bytes;
+        while (n >= 1024 && i < units.length - 1) {
+          n /= 1024;
+          i++;
+        }
+        return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+      }
+
+      function setStatus(msg, kind) {
+        statusEl.className = "status " + (kind || "");
+        statusEl.textContent = msg;
+      }
+
+      function resetAll() {
+        selectedFiles = [];
+        fileInput.value = "";
+        senderEl.value = "";
+        notesEl.value = "";
+        progressEl.style.display = "none";
+        barEl.style.width = "0%";
+        setStatus("", "");
+        renderFiles();
+      }
+
+      drop.addEventListener("click", () => fileInput.click());
+      drop.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") fileInput.click();
+      });
+
+      ["dragenter", "dragover"].forEach(evt => {
+        drop.addEventListener(evt, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          drop.classList.add("dragover");
+        });
+      });
+
+      ["dragleave", "drop"].forEach(evt => {
+        drop.addEventListener(evt, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          drop.classList.remove("dragover");
+        });
+      });
+
+      drop.addEventListener("drop", (e) => {
+        const files = Array.from(e.dataTransfer.files || []);
+        if (files.length) {
+          selectedFiles = files;
+          renderFiles();
+          setStatus("", "");
+        }
+      });
+
+      fileInput.addEventListener("change", () => {
+        selectedFiles = Array.from(fileInput.files || []);
+        renderFiles();
+        setStatus("", "");
+      });
+
+      resetBtn.addEventListener("click", resetAll);
+
+      sendBtn.addEventListener("click", async () => {
+        if (!selectedFiles.length) return;
+
+        sendBtn.disabled = true;
+        setStatus("Lade hoch...", "");
+        progressEl.style.display = "block";
+        barEl.style.width = "20%";
+
+        const form = new FormData();
+        selectedFiles.forEach((file, idx) => form.append(`file_${idx + 1}`, file, file.name));
+        form.append("fileCount", String(selectedFiles.length));
+        form.append("sender", senderEl.value || "");
+        form.append("notes", notesEl.value || "");
+        form.append("clientTimestamp", new Date().toISOString());
+
+        try {
+          barEl.style.width = "55%";
+
+          const res = await fetch(WEBHOOK_URL, {
+            method: "POST",
+            body: form
+          });
+
+          barEl.style.width = "85%";
+
+          const text = await res.text().catch(() => "");
+          if (!res.ok) {
+            setStatus(`Fehler: ${res.status} ${res.statusText}. Antwort: ${text || "keine"}`, "err");
+          } else {
+            setStatus("Erfolgreich gesendet.", "ok");
+          }
+
+          barEl.style.width = "100%";
+        } catch (err) {
+          setStatus("Upload fehlgeschlagen. Häufige Ursache ist CORS. Siehe Hinweis unten.", "err");
+        } finally {
+          sendBtn.disabled = false;
+          setTimeout(() => {
+            progressEl.style.display = "none";
+            barEl.style.width = "0%";
+          }, 800);
+        }
+      });
+
+      renderFiles();
+    </script>
+  </body>
+</html>
